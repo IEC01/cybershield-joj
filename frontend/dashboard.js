@@ -1,0 +1,157 @@
+let audioUnlocked = false;
+
+document.addEventListener("click", () => {
+  if (!audioUnlocked) {
+    const ctx = new AudioContext();
+    ctx.resume().then(() => { audioUnlocked = true; });
+  }
+}, { once: false });
+const WS  = "ws://127.0.0.1:8000/ws";
+const API = "http://127.0.0.1:8000";
+
+let stats = { total: 0, anomalies: 0, blocked: new Set() };
+let logCount = 0;
+let ws;
+
+function beep() {
+  try {
+    const ctx  = new AudioContext();
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.setValueAtTime(440, ctx.currentTime + 0.15);
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.setValueAtTime(0, ctx.currentTime + 0.3);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.3);
+  } catch(e) {
+    console.log("Son non disponible:", e);
+  }
+}
+
+function connect() {
+  ws = new WebSocket(WS);
+
+  ws.onopen = () => {
+    document.getElementById("status-dot").style.background = "#22c55e";
+    document.getElementById("status-text").textContent = "Surveillance active";
+    console.log("WebSocket connecté !");
+  };
+
+  ws.onmessage = (e) => {
+    const log = JSON.parse(e.data);
+    stats.total++;
+
+    if (log.is_anomaly) {
+      stats.anomalies++;
+      stats.blocked.add(log.ip);
+      addAlert(log);
+      showBanner(log);
+      beep();
+    }
+
+    addRow(log);
+    updateMetrics();
+  };
+
+  ws.onerror = (err) => {
+    console.error("WebSocket erreur:", err);
+  };
+
+  ws.onclose = () => {
+    document.getElementById("status-dot").style.background = "#ef4444";
+    document.getElementById("status-text").textContent = "Déconnecté — reconnexion...";
+    setTimeout(connect, 2000);
+  };
+}
+
+function addRow(log) {
+  logCount++;
+  document.getElementById("log-count").textContent = logCount + " entrées";
+
+  const score = log.anomaly_score;
+  const color = score > 0.60 ? "#ef4444" : score > 0.50 ? "#f59e0b" : "#22c55e";
+  const pct   = Math.round(score * 100);
+
+  const badge = log.is_anomaly
+    ? '<span class="badge danger">Anomalie</span>'
+    : '<span class="badge ok">Normal</span>';
+
+  const system = log.system.split(".")[0];
+
+  const row = document.createElement("tr");
+  if (log.is_anomaly) row.classList.add("anomaly");
+
+  row.innerHTML = `
+    <td>${log.timestamp}</td>
+    <td><code>${log.ip}</code></td>
+    <td>${system}</td>
+    <td>${log.method} ${log.path}</td>
+    <td>
+      <div class="score-bar">
+        <div class="score-track">
+          <div class="score-fill"
+               style="width:${pct}%;background:${color}"></div>
+        </div>
+        <span style="font-size:11px;color:${color};min-width:32px">
+          ${score.toFixed(2)}
+        </span>
+      </div>
+    </td>
+    <td>${badge}</td>
+  `;
+
+  const tbody = document.getElementById("log-tbody");
+  tbody.insertBefore(row, tbody.firstChild);
+  if (tbody.rows.length > 50) tbody.deleteRow(-1);
+}
+
+function addAlert(log) {
+  const list = document.getElementById("alerts-list");
+  const placeholder = list.querySelector("div[style]");
+  if (placeholder) placeholder.remove();
+
+  const item = document.createElement("div");
+  item.className = "alert-item";
+  item.innerHTML = `
+    <div class="alert-time">${log.timestamp} — Score ${log.anomaly_score.toFixed(2)}</div>
+    <div>${log.ip} → ${log.system.split(".")[0]}</div>
+    <div style="color:#94a3b8;margin-top:2px">${log.method} ${log.path}</div>
+  `;
+  list.insertBefore(item, list.firstChild);
+  if (list.children.length > 10) list.removeChild(list.lastChild);
+}
+
+function showBanner(log) {
+  const b = document.getElementById("alert-banner");
+  b.textContent = `ALERTE — IP ${log.ip} | Score IA: ${log.anomaly_score.toFixed(2)} | Système: ${log.system.split(".")[0]}`;
+  b.style.display = "block";
+  clearTimeout(window._bannerTimer);
+  window._bannerTimer = setTimeout(() => b.style.display = "none", 4000);
+}
+
+function updateMetrics() {
+  document.getElementById("m-total").textContent     = stats.total;
+  document.getElementById("m-anomalies").textContent = stats.anomalies;
+  document.getElementById("m-blocked").textContent   = stats.blocked.size;
+
+  const score = stats.total === 0
+    ? 100
+    : Math.max(0, Math.round(100 - (stats.anomalies / stats.total) * 200));
+
+  document.getElementById("m-score").textContent = score + "%";
+}
+
+function attack(type) {
+  fetch(`${API}/simulate/${type}`, { method: "POST" })
+    .then(() => console.log("Attaque lancée:", type));
+}
+
+function stopAttack() {
+  fetch(`${API}/stop`, { method: "POST" })
+    .then(() => console.log("Attaque arrêtée"));
+}
+
+connect();
